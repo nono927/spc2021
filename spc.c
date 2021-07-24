@@ -69,7 +69,6 @@ void main(int argc, char* argv[]) {
 
      spc(A, b, x, N, M);
 
-     //ierr = MPI_Barrier(MPI_COMM_WORLD);
      t2 = MPI_Wtime();
      t0 =  t2 - t1; 
      ierr = MPI_Reduce(&t0, &t_w, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -126,7 +125,41 @@ void main(int argc, char* argv[]) {
      exit(0);
 }
 
+// LU decomposition
+void LU(double A[N][N], int n) {
+  int i, j, k;
+  int ib = (n + numprocs - 1) / numprocs;
+  int i_start = myid * ib;
+  int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
+  double dtemp;
+  double buf[n];
 
+  for (k=0; k<n; k++) {
+    int src_id = k / ib;
+    if (myid == src_id) {
+     dtemp = 1.0 / A[k][k];
+     for (i=k+1; i<n; i++) {
+        A[i][k] = A[i][k]*dtemp;   
+        buf[i] = A[i][k];
+     }
+     for (int dst_id = myid + 1; dst_id < numprocs; ++dst_id) {
+       MPI_Send(buf, n, MPI_DOUBLE, dst_id, k, MPI_COMM_WORLD);
+     }
+     ++i_start;
+    } else if (src_id < myid) {
+      MPI_Recv(buf, n, MPI_DOUBLE, src_id, k, MPI_COMM_WORLD, NULL);
+    }
+    for (j=k+1; j<n; j++) {
+     //  dtemp = A[j][k];
+      dtemp = buf[j];
+      for (i=i_start; i<i_end; i++) {
+        A[j][i] = A[j][i] - A[k][i]*dtemp; 
+      }
+    }
+  }
+}
+
+// spc
 void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m) 
 {
      int i, j, k, ne;
@@ -137,46 +170,10 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
 
      /* LU decomposition ---------------------- */  
-     double buf[n];
-     for (k=0; k<n; k++) {
-       int src_id = k / ib;
-       if (myid == src_id) {
-        dtemp = 1.0 / A[k][k];
-        for (i=k+1; i<n; i++) {
-           A[i][k] = A[i][k]*dtemp;   
-           buf[i] = A[i][k];
-        }
-        for (int dst_id = myid + 1; dst_id < numprocs; ++dst_id) {
-          MPI_Send(buf, n, MPI_DOUBLE, dst_id, k, MPI_COMM_WORLD);
-        }
-        ++i_start;
-       } else if (src_id < myid) {
-         MPI_Recv(buf, n, MPI_DOUBLE, src_id, k, MPI_COMM_WORLD, NULL);
-       }
-       for (j=k+1; j<n; j++) {
-        //  dtemp = A[j][k];
-         dtemp = buf[j];
-         for (i=i_start; i<i_end; i++) {
-           A[j][i] = A[j][i] - A[k][i]*dtemp; 
-         }
-       }
-     }
-    //  debug
-    //  double At[n][n];
-    //  for (int i = 0; i < n; ++i) {
-    //    for (int j = 0; j < n; ++j) {
-    //      At[i][j] = 0;
-    //    }
-    //    int is = ib * myid;
-    //    int ie = ib * (myid + 1);
-    //    for (int j = is; j < ie; ++j) {
-    //      At[i][j] = A[i][j];
-    //    }
-    //  }
-    //  MPI_Allreduce(At, A, n*n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+     LU(A, n);
      /* --------------------------------------- */
 
-     i_start = myid * ib;
+     double C[4][n];
      for (ne=0; ne<m; ne++) {
        for (i = 0; i < n; ++i) c[i] = 0.0;
        for (i = 0; i < n; ++i) x[ne][i] = 0.0;
