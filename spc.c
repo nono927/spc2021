@@ -159,6 +159,75 @@ void LU(double A[N][N], int n) {
   }
 }
 
+void forward(double A[N][N], double b[M][N], double c[N], int n, int m, int ne) {
+  int i, j, k;
+  double dtemp;
+
+  int ib = (n + numprocs - 1) / numprocs;
+  int i_start = myid * ib;
+  int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
+
+  for (i = 0; i < n; ++i) c[i] = 0.0;
+
+  for (i = i_start; i < n; i += ib) {
+    if (myid != 0) {
+      MPI_Recv(&c[i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD, NULL);
+    }
+    if (myid == i / ib) {
+      for (k = i; k < i + ib; ++k) {
+        c[k] = b[ne][k] + c[k];
+        for (j = i_start; j < k; ++j) {
+          c[k] -= A[k][j] * c[j];
+        }
+      }
+    } else {
+      for (k = i; k < i + ib; ++k) {
+        for (j = i_start; j < i_end; ++j) {
+          c[k] -= A[k][j] * c[j];
+        }
+      }
+      if (myid != numprocs - 1) {
+        MPI_Send(&c[i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD);
+      }
+    }
+  }
+}
+
+void backward(double A[N][N], double c[N], double x[M][N], int n, int m, int ne) {
+  int i, j, k;
+  double dtemp;
+
+  int ib = (n + numprocs - 1) / numprocs;
+  int i_start = myid * ib;
+  int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
+
+  for (i = 0; i < n; ++i) x[ne][i] = 0.0;
+
+  for (i = i_start; i >= 0; i -= ib) {
+    if (myid != numprocs - 1) {
+      MPI_Recv(&x[ne][i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD, NULL);
+    }
+    if (i == i_start) {
+      for (k = i + ib - 1; k >= i; --k) {
+        x[ne][k] = c[k] + x[ne][k];
+        for (j = i_end - 1; j > k; --j) {
+          x[ne][k] -= A[k][j] * x[ne][j];
+        }
+        x[ne][k] = x[ne][k] / A[k][k];
+      }
+    } else {
+      for (k = i + ib - 1; k >= i; --k) {
+        for (j = i_end - 1; j >= i_start; --j) {
+          x[ne][k] -= A[k][j] * x[ne][j];
+        }
+      }
+      if (myid != 0) {
+        MPI_Send(&x[ne][i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD);
+      }
+    }
+  }
+}
+
 // spc
 void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m) 
 {
@@ -175,58 +244,13 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
 
      double C[4][n];
      for (ne=0; ne<m; ne++) {
-       for (i = 0; i < n; ++i) c[i] = 0.0;
-       for (i = 0; i < n; ++i) x[ne][i] = 0.0;
   
        /* Forward substitution ------------------ */  
-       for (i = i_start; i < n; i += ib) {
-         if (myid != 0) {
-           MPI_Recv(&c[i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD, NULL);
-         }
-         if (myid == i / ib) {
-           for (k = i; k < i + ib; ++k) {
-             c[k] = b[ne][k] + c[k];
-             for (j = i_start; j < k; ++j) {
-               c[k] -= A[k][j] * c[j];
-             }
-           }
-         } else {
-           for (k = i; k < i + ib; ++k) {
-             for (j = i_start; j < i_end; ++j) {
-               c[k] -= A[k][j] * c[j];
-             }
-           }
-           if (myid != numprocs - 1) {
-             MPI_Send(&c[i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD);
-           }
-         }
-       }
+       forward(A, b, c, n, m, ne);
        /* --------------------------------------- */
 
        /* Backward substitution ------------------ */  
-       for (i = i_start; i >= 0; i -= ib) {
-         if (myid != numprocs - 1) {
-           MPI_Recv(&x[ne][i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD, NULL);
-         }
-         if (i == i_start) {
-           for (k = i + ib - 1; k >= i; --k) {
-             x[ne][k] = c[k] + x[ne][k];
-             for (j = i_end - 1; j > k; --j) {
-               x[ne][k] -= A[k][j] * x[ne][j];
-             }
-             x[ne][k] = x[ne][k] / A[k][k];
-           }
-         } else {
-           for (k = i + ib - 1; k >= i; --k) {
-             for (j = i_end - 1; j >= i_start; --j) {
-               x[ne][k] -= A[k][j] * x[ne][j];
-             }
-           }
-           if (myid != 0) {
-             MPI_Send(&x[ne][i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD);
-           }
-         }
-       }
+       backward(A, c, x, n, m, ne);
        /* --------------------------------------- */
 
      }
