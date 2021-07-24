@@ -176,26 +176,59 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
     //  MPI_Allreduce(At, A, n*n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
      /* --------------------------------------- */
 
-
+     i_start = myid * ib;
      for (ne=0; ne<m; ne++) {
+       for (i = 0; i < n; ++i) c[i] = 0.0;
+       for (i = 0; i < n; ++i) x[ne][i] = 0.0;
   
        /* Forward substitution ------------------ */  
-       for (k=0; k<n; k++) {
-         c[k] = b[ne][k];
-         for (j=0; j<k; j++) {
-           c[k] -= A[k][j]*c[j];
+       for (i = i_start; i < n; i += ib) {
+         if (myid != 0) {
+           MPI_Recv(&c[i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD, NULL);
+         }
+         if (myid == i / ib) {
+           for (k = i; k < i + ib; ++k) {
+             c[k] = b[ne][k] + c[k];
+             for (j = i_start; j < k; ++j) {
+               c[k] -= A[k][j] * c[j];
+             }
+           }
+         } else {
+           for (k = i; k < i + ib; ++k) {
+             for (j = i_start; j < i_end; ++j) {
+               c[k] -= A[k][j] * c[j];
+             }
+           }
+           if (myid != numprocs - 1) {
+             MPI_Send(&c[i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD);
+           }
          }
        }
        /* --------------------------------------- */
 
        /* Backward substitution ------------------ */  
-       x[ne][n-1] = c[n-1]/A[n-1][n-1];
-       for (k=n-2; k>=0; k--) {
-         x[ne][k] = c[k];
-         for (j=k+1; j<n; j++) {
-           x[ne][k] -= A[k][j]*x[ne][j];
+       for (i = i_start; i >= 0; i -= ib) {
+         if (myid != numprocs - 1) {
+           MPI_Recv(&x[ne][i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD, NULL);
          }
-         x[ne][k] = x[ne][k] / A[k][k];
+         if (i == i_start) {
+           for (k = i + ib - 1; k >= i; --k) {
+             x[ne][k] = c[k] + x[ne][k];
+             for (j = i_end - 1; j > k; --j) {
+               x[ne][k] -= A[k][j] * x[ne][j];
+             }
+             x[ne][k] = x[ne][k] / A[k][k];
+           }
+         } else {
+           for (k = i + ib - 1; k >= i; --k) {
+             for (j = i_end - 1; j >= i_start; --j) {
+               x[ne][k] -= A[k][j] * x[ne][j];
+             }
+           }
+           if (myid != 0) {
+             MPI_Send(&x[ne][i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD);
+           }
+         }
        }
        /* --------------------------------------- */
 
