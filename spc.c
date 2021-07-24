@@ -159,42 +159,53 @@ void LU(double A[N][N], int n) {
   }
 }
 
-void forward(double A[N][N], double b[M][N], double c[N], int n, int m, int ne) {
-  int i, j, k;
+// forward
+void forward(double A[N][N], double b[M][N], double c[8][N], int n, int m, int ne, int nw) {
+  int i, j, k, l;
   double dtemp;
 
   int ib = (n + numprocs - 1) / numprocs;
   int i_start = myid * ib;
   int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
 
-  for (i = 0; i < n; ++i) c[i] = 0.0;
+  for (i = 0; i < n; ++i) 
+    for (l = 0; l < nw; ++l) c[l][i] = 0.0;
 
   for (i = i_start; i < n; i += ib) {
     if (myid != 0) {
-      MPI_Recv(&c[i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD, NULL);
+      for (l = 0; l < nw; ++l) {
+        MPI_Recv(&c[l][i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD, NULL);
+      }
     }
     if (myid == i / ib) {
-      for (k = i; k < i + ib; ++k) {
-        c[k] = b[ne][k] + c[k];
-        for (j = i_start; j < k; ++j) {
-          c[k] -= A[k][j] * c[j];
+      for (l = 0; l < nw; ++l) {
+        for (k = i; k < i + ib; ++k) {
+          c[l][k] = b[ne][k] + c[l][k];
+          for (j = i_start; j < k; ++j) {
+            c[l][k] -= A[k][j] * c[l][j];
+          }
         }
       }
     } else {
-      for (k = i; k < i + ib; ++k) {
-        for (j = i_start; j < i_end; ++j) {
-          c[k] -= A[k][j] * c[j];
+      for (l = 0; l < nw; ++l) {
+        for (k = i; k < i + ib; ++k) {
+          for (j = i_start; j < i_end; ++j) {
+            c[l][k] -= A[k][j] * c[l][j];
+          }
         }
       }
       if (myid != numprocs - 1) {
-        MPI_Send(&c[i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD);
+        for (l = 0; l < nw; ++l) {
+          MPI_Send(&c[l][i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD);
+        }
       }
     }
   }
 }
 
-void backward(double A[N][N], double c[N], double x[M][N], int n, int m, int ne) {
-  int i, j, k;
+// backward
+void backward(double A[N][N], double c[8][N], double x[M][N], int n, int m, int ne, int nw) {
+  int i, j, k, l;
   double dtemp;
 
   int ib = (n + numprocs - 1) / numprocs;
@@ -205,24 +216,32 @@ void backward(double A[N][N], double c[N], double x[M][N], int n, int m, int ne)
 
   for (i = i_start; i >= 0; i -= ib) {
     if (myid != numprocs - 1) {
-      MPI_Recv(&x[ne][i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD, NULL);
+      for (l = 0; l < nw; ++l) {
+      MPI_Recv(&x[ne+l][i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD, NULL);
+      }
     }
     if (i == i_start) {
-      for (k = i + ib - 1; k >= i; --k) {
-        x[ne][k] = c[k] + x[ne][k];
-        for (j = i_end - 1; j > k; --j) {
-          x[ne][k] -= A[k][j] * x[ne][j];
+      for (l = 0; l < nw; ++l) {
+        for (k = i + ib - 1; k >= i; --k) {
+          x[ne+l][k] = c[l][k] + x[ne+l][k];
+          for (j = i_end - 1; j > k; --j) {
+            x[ne+l][k] -= A[k][j] * x[ne+l][j];
+          }
+          x[ne+l][k] = x[ne+l][k] / A[k][k];
         }
-        x[ne][k] = x[ne][k] / A[k][k];
       }
     } else {
-      for (k = i + ib - 1; k >= i; --k) {
-        for (j = i_end - 1; j >= i_start; --j) {
-          x[ne][k] -= A[k][j] * x[ne][j];
+      for (l = 0; l < nw; ++l) {
+        for (k = i + ib - 1; k >= i; --k) {
+          for (j = i_end - 1; j >= i_start; --j) {
+            x[ne+l][k] -= A[k][j] * x[ne+l][j];
+          }
         }
       }
       if (myid != 0) {
-        MPI_Send(&x[ne][i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD);
+        for (l = 0; l < nw; ++l) {
+        MPI_Send(&x[ne+l][i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD);
+        }
       }
     }
   }
@@ -242,17 +261,22 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      LU(A, n);
      /* --------------------------------------- */
 
-     double C[4][n];
-     for (ne=0; ne<m; ne++) {
+     double C[8][n];
+     int MAX_NE = m / 8;
+     for (ne=0; ne<MAX_NE; ne+=8) {
   
        /* Forward substitution ------------------ */  
-       forward(A, b, c, n, m, ne);
+       forward(A, b, C, n, m, ne, 8);
        /* --------------------------------------- */
 
        /* Backward substitution ------------------ */  
-       backward(A, c, x, n, m, ne);
+       backward(A, C, x, n, m, ne, 8);
        /* --------------------------------------- */
 
+     }
+     for (; ne < m; ++ne) {
+       forward(A, b, C, n, m, ne, 1);
+       backward(A, C, x, n, m, ne, 1);
      }
      /* End of m loop ----------------------------------------- */ 
 
