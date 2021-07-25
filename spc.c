@@ -127,6 +127,8 @@ void main(int argc, char* argv[]) {
 
 
 #include <arm_sve.h>
+#include <fj_tool/fipp.h>
+#include <fj_tool/fapp.h>
 
 const int BWIDTH = 8;
 
@@ -145,6 +147,8 @@ void LU(double A[N][N], int n) {
      dtemp = 1.0 / A[k][k];
      for (i=k+1; i<n; i++) {
         A[i][k] = A[i][k]*dtemp;   
+     }
+     for (i=k+1; i<n; i++) {
         buf[i] = A[i][k];
      }
      for (int dst_id = myid + 1; dst_id < numprocs; ++dst_id) {
@@ -153,6 +157,8 @@ void LU(double A[N][N], int n) {
      ++i_start;
     } else if (src_id < myid) {
       MPI_Recv(buf, n, MPI_DOUBLE, src_id, k, MPI_COMM_WORLD, NULL);
+    } else {
+      break;
     }
     for (j=k+1; j<n; j++) {
      //  dtemp = A[j][k];
@@ -215,7 +221,7 @@ void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, 
 }
 
 // backward
-void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m, int ne, int nw) {
+void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m, int ne, int nw, double xbuf[]) {
   int i, j, k, l;
   double dtemp;
 
@@ -223,44 +229,50 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
   int i_start = myid * ib;
   int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
 
-  double xbuf[nw * ib];
+  // double xbuf[nw * ib];
 
   for (i = 0; i < n; ++i) x[ne][i] = 0.0;
 
   for (i = i_start; i >= 0; i -= ib) {
     if (myid != numprocs - 1) {
-      MPI_Recv(&xbuf, nw * ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD, NULL);
+      MPI_Recv(xbuf, nw * ib, MPI_DOUBLE, myid+1, i+n, MPI_COMM_WORLD, NULL);
       for (l = 0; l < nw; ++l) {
         for (j = 0; j < ib; ++j) {
-          x[ne+l][i] = xbuf[ib * l + j];
+          x[ne+l][i+j] = xbuf[ib * l + j];
         }
       }
     }
     if (i == i_start) {
       for (l = 0; l < nw; ++l) {
         for (k = i + ib - 1; k >= i; --k) {
-          x[ne+l][k] = c[k][l] + x[ne+l][k];
+          double x_val = c[k][l] + x[ne+l][k];
+          // x[ne+l][k] = c[k][l] + x[ne+l][k];
           for (j = i_end - 1; j > k; --j) {
-            x[ne+l][k] -= A[k][j] * x[ne+l][j];
+            // x[ne+l][k] -= A[k][j] * x[ne+l][j];
+            x_val -= A[k][j] * x[ne+l][j];
           }
-          x[ne+l][k] = x[ne+l][k] / A[k][k];
+          // x[ne+l][k] = x[ne+l][k] / A[k][k];
+          x[ne+l][k] = x_val / A[k][k];
         }
       }
     } else {
       for (l = 0; l < nw; ++l) {
         for (k = i + ib - 1; k >= i; --k) {
+          double x_val = x[ne+l][k];
           for (j = i_end - 1; j >= i_start; --j) {
-            x[ne+l][k] -= A[k][j] * x[ne+l][j];
+            // x[ne+l][k] -= A[k][j] * x[ne+l][j];
+            x_val -= A[k][j] * x[ne+l][j];
           }
+          x[ne+l][k] = x_val;
         }
       }
       if (myid != 0) {
         for (l = 0; l < nw; ++l) {
           for (j = 0; j < ib; ++j) {
-            xbuf[ib * l + j] = x[ne+l][i];
+            xbuf[ib * l + j] = x[ne+l][i+j];
           }
         }
-        MPI_Send(xbuf, nw * ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD);
+        MPI_Send(xbuf, nw * ib, MPI_DOUBLE, myid-1, i+n, MPI_COMM_WORLD);
       }
     }
   }
@@ -269,6 +281,7 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
 // spc
 void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m) 
 {
+    //  fipp_start();
      int i, j, k, ne;
      double dtemp;
 
@@ -277,28 +290,37 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
 
      /* LU decomposition ---------------------- */  
+     if (myid % 32 == 0) fapp_start("LU", 1, 0);
      LU(A, n);
+     if (myid % 32 == 0) fapp_stop("LU", 1, 0);
      /* --------------------------------------- */
 
      double C[n][BWIDTH];
+     double xbuf[BWIDTH*ib];
      int MAX_NE = (m / BWIDTH) * BWIDTH;
      for (ne=0; ne<MAX_NE; ne+=BWIDTH) {
   
-       /* Forward substitution ------------------ */  
+       /* Forward substitution ------------------ */
+       if (myid % 32 == 0) fapp_start("forward", 1, 0);  
        forward(A, b, C, n, m, ne, BWIDTH);
+       if (myid % 32 == 0) fapp_stop("forward", 1, 0);
        /* --------------------------------------- */
 
        /* Backward substitution ------------------ */  
-       backward(A, C, x, n, m, ne, BWIDTH);
+      //  MPI_Barrier(MPI_COMM_WORLD);
+       if (myid % 32 == 0) fapp_start("backward", 1, 0);
+       backward(A, C, x, n, m, ne, BWIDTH, xbuf);
+       if (myid % 32 == 0) fapp_stop("backward", 1, 0);
        /* --------------------------------------- */
 
      }
      for (; ne < m; ++ne) {
        forward(A, b, C, n, m, ne, 1);
-       backward(A, C, x, n, m, ne, 1);
+       backward(A, C, x, n, m, ne, 1, xbuf);
      }
      /* End of m loop ----------------------------------------- */ 
 
+    //  fipp_stop();
 }
 
 
