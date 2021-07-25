@@ -171,7 +171,7 @@ void LU(double A[N][N], int n) {
 }
 
 // forward
-void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, int ne, int nw) {
+void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, int ne, int nw, int myid, int numprocs, MPI_Comm COMM) {
   int i, j, k, l;
   double dtemp;
 
@@ -184,7 +184,7 @@ void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, 
 
   for (i = i_start; i < n; i += ib) {
     if (myid != 0) {
-      MPI_Recv(&c[i][0], ib*BWIDTH, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD, NULL);
+      MPI_Recv(&c[i][0], ib*BWIDTH, MPI_DOUBLE, myid-1, i, COMM, NULL);
     }
     if (myid == i / ib) {
       for (k = i; k < i + ib; ++k) {
@@ -214,14 +214,14 @@ void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, 
         }
       }
       if (myid != numprocs - 1) {
-        MPI_Send(&c[i][0], ib*BWIDTH, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD);
+        MPI_Send(&c[i][0], ib*BWIDTH, MPI_DOUBLE, myid+1, i, COMM);
       }
     }
   }
 }
 
 // backward
-void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m, int ne, int nw, double xbuf[]) {
+void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m, int ne, int nw, double xbuf[], int myid, int numprocs, MPI_Comm COMM) {
   int i, j, k, l;
   double dtemp;
 
@@ -235,7 +235,7 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
 
   for (i = i_start; i >= 0; i -= ib) {
     if (myid != numprocs - 1) {
-      MPI_Recv(xbuf, nw * ib, MPI_DOUBLE, myid+1, i+n, MPI_COMM_WORLD, NULL);
+      MPI_Recv(xbuf, nw * ib, MPI_DOUBLE, myid+1, i+n, COMM, NULL);
       for (l = 0; l < nw; ++l) {
         for (j = 0; j < ib; ++j) {
           x[ne+l][i+j] = xbuf[ib * l + j];
@@ -272,7 +272,7 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
             xbuf[ib * l + j] = x[ne+l][i+j];
           }
         }
-        MPI_Send(xbuf, nw * ib, MPI_DOUBLE, myid-1, i+n, MPI_COMM_WORLD);
+        MPI_Send(xbuf, nw * ib, MPI_DOUBLE, myid-1, i+n, COMM);
       }
     }
   }
@@ -281,7 +281,7 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
 // spc
 void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m) 
 {
-    //  fipp_start();
+     fipp_start();
      int i, j, k, ne;
      double dtemp;
 
@@ -295,32 +295,96 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      if (myid % 32 == 0) fapp_stop("LU", 1, 0);
      /* --------------------------------------- */
 
+     const int R = 18;
+     MPI_Comm MPI_COMM_SPC;
+     MPI_Comm MPI_COMM_REV;
+     int color = myid % R;
+     int key = myid / R;
+     MPI_Comm_split(MPI_COMM_WORLD, color, key, &MPI_COMM_SPC);
+     MPI_Comm_split(MPI_COMM_WORLD, key, color, &MPI_COMM_REV);
+
+     {
+       int c0 = ib * R;
+       int c1 = ib * color;
+       int c2 = ib * key * R;
+       double Asend[n][c0];
+       double Arecv[n][c0];
+       for (i = 0; i < n; ++i) {
+         for (j = 0; j < c0; ++j) {
+           Asend[i][j] = 0.0;
+         }
+       }
+       for (i = 0; i < n; ++i) {
+         for (j = 0; j < ib; ++j) {
+           Asend[i][c1 + j] = A[i][i_start + j];
+         }
+       }
+       MPI_Allreduce(Asend, Arecv, n*ib*R, MPI_DOUBLE, MPI_SUM, MPI_COMM_REV);
+       for (i = 0; i < n; ++i) {
+         for (j = 0; j < ib * R; ++j) {
+           A[i][c2 + j] = Arecv[i][j];
+         }
+       }
+     }
+
      double C[n][BWIDTH];
-     double xbuf[BWIDTH*ib];
+     double xbuf[BWIDTH*ib*R];
      int MAX_NE = (m / BWIDTH) * BWIDTH;
-     for (ne=0; ne<MAX_NE; ne+=BWIDTH) {
+     int ne_start = (m / R) * color;
+     int ne_end = (m / R) * (color + 1);
+     int numprocs_spc = numprocs / R;
+
+     for (ne=ne_start; ne<ne_end; ne+=BWIDTH) {
   
        /* Forward substitution ------------------ */
        if (myid % 32 == 0) fapp_start("forward", 1, 0);  
-       forward(A, b, C, n, m, ne, BWIDTH);
+       forward(A, b, C, n, m, ne, BWIDTH, key, numprocs_spc, MPI_COMM_SPC);
        if (myid % 32 == 0) fapp_stop("forward", 1, 0);
        /* --------------------------------------- */
 
        /* Backward substitution ------------------ */  
       //  MPI_Barrier(MPI_COMM_WORLD);
        if (myid % 32 == 0) fapp_start("backward", 1, 0);
-       backward(A, C, x, n, m, ne, BWIDTH, xbuf);
+       backward(A, C, x, n, m, ne, BWIDTH, xbuf, key, numprocs_spc, MPI_COMM_SPC);
        if (myid % 32 == 0) fapp_stop("backward", 1, 0);
        /* --------------------------------------- */
 
      }
-     for (; ne < m; ++ne) {
-       forward(A, b, C, n, m, ne, 1);
-       backward(A, C, x, n, m, ne, 1, xbuf);
+     for (ne = m / R * R; ne < m; ++ne) {
+       forward(A, b, C, n, m, ne, 1, myid, numprocs, MPI_COMM_WORLD);
+       backward(A, C, x, n, m, ne, 1, xbuf, myid, numprocs, MPI_COMM_WORLD);
      }
      /* End of m loop ----------------------------------------- */ 
 
-    //  fipp_stop();
+     {
+       int h = m / R;
+       int c0 = ib * R;
+       int c1 = ib * color;
+       int c2 = ib * key * R;
+       int c3 = h * color;
+       double xsend[m][ib * R];
+       double xrecv[m][ib * R];
+       for (i = 0; i < m; ++i) {
+         for (j = 0; j < c0; ++j) {
+           xsend[i][j] = 0.0;
+         }
+       }
+       for (i = 0; i < h; ++i) {
+         for (j = 0; j < c0; ++j) {
+           xsend[c3 + i][j] = x[c3 + i][c2 + j];
+         }
+       }
+       MPI_Allreduce(xsend, xrecv, m*ib*R, MPI_DOUBLE, MPI_SUM, MPI_COMM_REV);
+       for (i = 0; i < m; ++i) {
+         for (j = 0; j < ib; ++j) {
+           x[i][i_start + j] = xrecv[i][c1 + j];
+         }
+       }
+     }
+
+     MPI_Comm_free(&MPI_COMM_SPC);
+     MPI_Comm_free(&MPI_COMM_REV);
+     fipp_stop();
 }
 
 
