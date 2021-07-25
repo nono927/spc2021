@@ -2,3 +2,5 @@ spc
 spc.h
 *.out
 *.err
+profile_dir
+*.txt

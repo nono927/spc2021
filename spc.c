@@ -223,12 +223,17 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
   int i_start = myid * ib;
   int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
 
+  double xbuf[nw * ib];
+
   for (i = 0; i < n; ++i) x[ne][i] = 0.0;
 
   for (i = i_start; i >= 0; i -= ib) {
     if (myid != numprocs - 1) {
+      MPI_Recv(&xbuf, nw * ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD, NULL);
       for (l = 0; l < nw; ++l) {
-        MPI_Recv(&x[ne+l][i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD, NULL);
+        for (j = 0; j < ib; ++j) {
+          x[ne+l][i] = xbuf[ib * l + j];
+        }
       }
     }
     if (i == i_start) {
@@ -251,8 +256,11 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
       }
       if (myid != 0) {
         for (l = 0; l < nw; ++l) {
-          MPI_Send(&x[ne+l][i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD);
+          for (j = 0; j < ib; ++j) {
+            xbuf[ib * l + j] = x[ne+l][i];
+          }
         }
+        MPI_Send(xbuf, nw * ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD);
       }
     }
   }

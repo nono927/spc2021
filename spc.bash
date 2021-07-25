@@ -8,3 +8,5 @@
 module load fj fjmpi
 
 mpiexec -stdout  spc.out ./spc
+# fipp -C -d ./profile_dir -Icall -i10 mpiexec -stdout  spc.out ./spc
+# fipppx -A -d ./profile_dir -Icpupa,balance,call,src,mpi > fipp.txt
