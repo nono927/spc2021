@@ -125,6 +125,11 @@ void main(int argc, char* argv[]) {
      exit(0);
 }
 
+
+#include <arm_sve.h>
+
+const int BWIDTH = 8;
+
 // LU decomposition
 void LU(double A[N][N], int n) {
   int i, j, k;
@@ -160,7 +165,7 @@ void LU(double A[N][N], int n) {
 }
 
 // forward
-void forward(double A[N][N], double b[M][N], double c[8][N], int n, int m, int ne, int nw) {
+void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, int ne, int nw) {
   int i, j, k, l;
   double dtemp;
 
@@ -169,42 +174,48 @@ void forward(double A[N][N], double b[M][N], double c[8][N], int n, int m, int n
   int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
 
   for (i = 0; i < n; ++i) 
-    for (l = 0; l < nw; ++l) c[l][i] = 0.0;
+    for (l = 0; l < nw; ++l) c[i][l] = 0.0;
 
   for (i = i_start; i < n; i += ib) {
     if (myid != 0) {
-      for (l = 0; l < nw; ++l) {
-        MPI_Recv(&c[l][i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD, NULL);
-      }
+      MPI_Recv(&c[i][0], ib*BWIDTH, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD, NULL);
     }
     if (myid == i / ib) {
-      for (l = 0; l < nw; ++l) {
-        for (k = i; k < i + ib; ++k) {
-          c[l][k] = b[ne][k] + c[l][k];
+      for (k = i; k < i + ib; ++k) {
+        for (l = 0; l < nw; ++l) {
+          c[k][l] = b[ne][k] + c[k][l];
           for (j = i_start; j < k; ++j) {
-            c[l][k] -= A[k][j] * c[l][j];
+            c[k][l] -= A[k][j] * c[j][l];
           }
         }
       }
     } else {
-      for (l = 0; l < nw; ++l) {
-        for (k = i; k < i + ib; ++k) {
-          for (j = i_start; j < i_end; ++j) {
-            c[l][k] -= A[k][j] * c[l][j];
-          }
+      for (k = i; k < i + ib; ++k) {
+        for (j = i_start; j < i_end; ++j) {
+          // for (l = 0; l < nw; ++l) {
+          //   c[k][l] -= A[k][j] * c[j][l];
+          // }
+          l = 0;
+          svbool_t pg = svwhilelt_b64(l, nw);
+          do {
+            svfloat64_t csrc_vec = svld1(pg, &c[j][l]);
+            svfloat64_t cdst_vec = svld1(pg, &c[k][l]);
+            cdst_vec = svmls_n_f64_z(pg, cdst_vec, csrc_vec, A[k][j]);
+            svst1(pg, &c[k][l], cdst_vec);
+            l += svcntd();
+            pg = svwhilelt_b64(l, nw);
+          } while (svptest_any(svptrue_b64(), pg));
         }
       }
       if (myid != numprocs - 1) {
-        for (l = 0; l < nw; ++l) {
-          MPI_Send(&c[l][i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD);
-        }
+        MPI_Send(&c[i][0], ib*BWIDTH, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD);
       }
     }
   }
 }
 
 // backward
-void backward(double A[N][N], double c[8][N], double x[M][N], int n, int m, int ne, int nw) {
+void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m, int ne, int nw) {
   int i, j, k, l;
   double dtemp;
 
@@ -217,13 +228,13 @@ void backward(double A[N][N], double c[8][N], double x[M][N], int n, int m, int 
   for (i = i_start; i >= 0; i -= ib) {
     if (myid != numprocs - 1) {
       for (l = 0; l < nw; ++l) {
-      MPI_Recv(&x[ne+l][i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD, NULL);
+        MPI_Recv(&x[ne+l][i], ib, MPI_DOUBLE, myid+1, i, MPI_COMM_WORLD, NULL);
       }
     }
     if (i == i_start) {
       for (l = 0; l < nw; ++l) {
         for (k = i + ib - 1; k >= i; --k) {
-          x[ne+l][k] = c[l][k] + x[ne+l][k];
+          x[ne+l][k] = c[k][l] + x[ne+l][k];
           for (j = i_end - 1; j > k; --j) {
             x[ne+l][k] -= A[k][j] * x[ne+l][j];
           }
@@ -240,7 +251,7 @@ void backward(double A[N][N], double c[8][N], double x[M][N], int n, int m, int 
       }
       if (myid != 0) {
         for (l = 0; l < nw; ++l) {
-        MPI_Send(&x[ne+l][i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD);
+          MPI_Send(&x[ne+l][i], ib, MPI_DOUBLE, myid-1, i, MPI_COMM_WORLD);
         }
       }
     }
@@ -261,16 +272,16 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      LU(A, n);
      /* --------------------------------------- */
 
-     double C[8][n];
-     int MAX_NE = m / 8;
-     for (ne=0; ne<MAX_NE; ne+=8) {
+     double C[n][BWIDTH];
+     int MAX_NE = (m / BWIDTH) * BWIDTH;
+     for (ne=0; ne<MAX_NE; ne+=BWIDTH) {
   
        /* Forward substitution ------------------ */  
-       forward(A, b, C, n, m, ne, 8);
+       forward(A, b, C, n, m, ne, BWIDTH);
        /* --------------------------------------- */
 
        /* Backward substitution ------------------ */  
-       backward(A, C, x, n, m, ne, 8);
+       backward(A, C, x, n, m, ne, BWIDTH);
        /* --------------------------------------- */
 
      }
