@@ -156,17 +156,17 @@ void LU(double A[N][N], int n) {
     //  }
      int dst1 = root_id + 1;
      int dst2 = root_id + 2;
-     if (dst1 < numprocs) MPI_Send(buf, n, MPI_DOUBLE, dst1, k, MPI_COMM_WORLD);
-     if (dst2 < numprocs) MPI_Send(buf, n, MPI_DOUBLE, dst2, k, MPI_COMM_WORLD);
+     if (dst1 < numprocs) MPI_Send(&buf[k+1], n-k-1, MPI_DOUBLE, dst1, k, MPI_COMM_WORLD);
+     if (dst2 < numprocs) MPI_Send(&buf[k+1], n-k-1, MPI_DOUBLE, dst2, k, MPI_COMM_WORLD);
      ++i_start;
     } else if (root_id < myid) {
       int d = myid - root_id + 1;
       int src  = root_id + (d >> 1) - 1;
       int dst1 = root_id + (d << 1) - 1;
       int dst2 = root_id + (d << 1);
-      MPI_Recv(buf, n, MPI_DOUBLE, src, k, MPI_COMM_WORLD, NULL);
-      if (dst1 < numprocs) MPI_Send(buf, n, MPI_DOUBLE, dst1, k, MPI_COMM_WORLD);
-      if (dst2 < numprocs) MPI_Send(buf, n, MPI_DOUBLE, dst2, k, MPI_COMM_WORLD);
+      MPI_Recv(&buf[k+1], n-k-1, MPI_DOUBLE, src, k, MPI_COMM_WORLD, NULL);
+      if (dst1 < numprocs) MPI_Send(&buf[k+1], n-k-1, MPI_DOUBLE, dst1, k, MPI_COMM_WORLD);
+      if (dst2 < numprocs) MPI_Send(&buf[k+1], n-k-1, MPI_DOUBLE, dst2, k, MPI_COMM_WORLD);
     } else {
       break;
     }
@@ -292,6 +292,16 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
 void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m) 
 {
      fipp_start();
+     fapp_start("spc", 1, 0);
+
+     const int R = 24;
+     MPI_Comm MPI_COMM_SPC;
+     MPI_Comm MPI_COMM_REV;
+     int color = myid % R;
+     int key = myid / R;
+     MPI_Comm_split(MPI_COMM_WORLD, color, key, &MPI_COMM_SPC);
+     MPI_Comm_split(MPI_COMM_WORLD, key, color, &MPI_COMM_REV);
+
      int i, j, k, ne;
      double dtemp;
 
@@ -304,14 +314,6 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      LU(A, n);
      if (myid % 32 == 0) fapp_stop("LU", 1, 0);
      /* --------------------------------------- */
-
-     const int R = 18;
-     MPI_Comm MPI_COMM_SPC;
-     MPI_Comm MPI_COMM_REV;
-     int color = myid % R;
-     int key = myid / R;
-     MPI_Comm_split(MPI_COMM_WORLD, color, key, &MPI_COMM_SPC);
-     MPI_Comm_split(MPI_COMM_WORLD, key, color, &MPI_COMM_REV);
 
      {
        int c0 = ib * R;
@@ -394,6 +396,7 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
 
      MPI_Comm_free(&MPI_COMM_SPC);
      MPI_Comm_free(&MPI_COMM_REV);
+     fapp_stop("spc", 1, 0);
      fipp_stop();
 }
 
