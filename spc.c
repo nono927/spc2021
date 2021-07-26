@@ -130,6 +130,8 @@ void main(int argc, char* argv[]) {
 #include <fj_tool/fipp.h>
 #include <fj_tool/fapp.h>
 
+#define USE_PROFILER 1
+
 const int BWIDTH = 8;
 
 // LU decomposition
@@ -199,10 +201,13 @@ void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, 
     if (myid == i / ib) {
       for (k = i; k < i + ib; ++k) {
         for (l = 0; l < nw; ++l) {
-          c[k][l] = b[ne][k] + c[k][l];
+          // c[k][l] = b[ne][k] + c[k][l];
+          double c_val = b[ne][k] + c[k][l];
           for (j = i_start; j < k; ++j) {
-            c[k][l] -= A[k][j] * c[j][l];
+            // c[k][l] -= A[k][j] * c[j][l];
+            c_val -= A[k][j] * c[j][l];
           }
+          c[k][l] = c_val;
         }
       }
     } else {
@@ -291,8 +296,10 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
 // spc
 void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m) 
 {
+#if USE_PROFILER
      fipp_start();
      fapp_start("spc", 1, 0);
+#endif
 
      const int R = 24;
      MPI_Comm MPI_COMM_SPC;
@@ -310,9 +317,13 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
 
      /* LU decomposition ---------------------- */  
-     if (myid % 32 == 0) fapp_start("LU", 1, 0);
+#if USE_PROFILER
+     fapp_start("LU", 1, 0);
      LU(A, n);
-     if (myid % 32 == 0) fapp_stop("LU", 1, 0);
+     fapp_stop("LU", 1, 0);
+#else
+     LU(A, n);
+#endif
      /* --------------------------------------- */
 
      {
@@ -349,16 +360,23 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      for (ne=ne_start; ne<ne_end; ne+=BWIDTH) {
   
        /* Forward substitution ------------------ */
-       if (myid % 32 == 0) fapp_start("forward", 1, 0);  
+#if USE_PROFILER
+       fapp_start("forward", 1, 0);  
        forward(A, b, C, n, m, ne, BWIDTH, key, numprocs_spc, MPI_COMM_SPC);
-       if (myid % 32 == 0) fapp_stop("forward", 1, 0);
+       fapp_stop("forward", 1, 0);
+#else
+       forward(A, b, C, n, m, ne, BWIDTH, key, numprocs_spc, MPI_COMM_SPC);
+#endif
        /* --------------------------------------- */
 
        /* Backward substitution ------------------ */  
-      //  MPI_Barrier(MPI_COMM_WORLD);
-       if (myid % 32 == 0) fapp_start("backward", 1, 0);
+#if USE_PROFILER
+       fapp_start("backward", 1, 0);
        backward(A, C, x, n, m, ne, BWIDTH, xbuf, key, numprocs_spc, MPI_COMM_SPC);
-       if (myid % 32 == 0) fapp_stop("backward", 1, 0);
+       fapp_stop("backward", 1, 0);
+#else
+       backward(A, C, x, n, m, ne, BWIDTH, xbuf, key, numprocs_spc, MPI_COMM_SPC);
+#endif
        /* --------------------------------------- */
 
      }
@@ -396,8 +414,10 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
 
      MPI_Comm_free(&MPI_COMM_SPC);
      MPI_Comm_free(&MPI_COMM_REV);
+#if USE_PROFILER
      fapp_stop("spc", 1, 0);
      fipp_stop();
+#endif
 }
 
 
