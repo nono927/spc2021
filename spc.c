@@ -246,49 +246,61 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
 
   // double xbuf[nw * ib];
 
-  for (i = 0; i < n; ++i) x[ne][i] = 0.0;
+  double y[n][nw];
+  for (i = 0; i < n; ++i) {
+    for (j = 0; j < nw; ++j) {
+      y[i][j] = 0.0;
+    }
+  }
 
   for (i = i_start; i >= 0; i -= ib) {
     if (myid != numprocs - 1) {
-      MPI_Recv(xbuf, nw * ib, MPI_DOUBLE, myid+1, i+n, COMM, NULL);
-      for (l = 0; l < nw; ++l) {
-        for (j = 0; j < ib; ++j) {
-          x[ne+l][i+j] = xbuf[ib * l + j];
-        }
-      }
+      MPI_Recv(&y[i][0], nw * ib, MPI_DOUBLE, myid+1, i+n, COMM, NULL);
     }
     if (i == i_start) {
-      for (l = 0; l < nw; ++l) {
-        for (k = i + ib - 1; k >= i; --k) {
-          double x_val = c[k][l] + x[ne+l][k];
-          // x[ne+l][k] = c[k][l] + x[ne+l][k];
+      for (k = i + ib - 1; k >= i; --k) {
+        double ainv = 1.0 / A[k][k];
+        for (l = 0; l < nw; ++l) {
+          double y_val = c[k][l] + y[k][l];
           for (j = i_end - 1; j > k; --j) {
-            // x[ne+l][k] -= A[k][j] * x[ne+l][j];
-            x_val -= A[k][j] * x[ne+l][j];
+            y_val -= A[k][j] * y[j][l];
           }
-          // x[ne+l][k] = x[ne+l][k] / A[k][k];
-          x[ne+l][k] = x_val / A[k][k];
+          y[k][l] = y_val * ainv;
         }
       }
     } else {
-      for (l = 0; l < nw; ++l) {
-        for (k = i + ib - 1; k >= i; --k) {
-          double x_val = x[ne+l][k];
-          for (j = i_end - 1; j >= i_start; --j) {
-            // x[ne+l][k] -= A[k][j] * x[ne+l][j];
-            x_val -= A[k][j] * x[ne+l][j];
-          }
-          x[ne+l][k] = x_val;
+      for (k = i; k < i + ib; ++k) {
+        for (j = i_start; j < i_end; ++j) {
+          l = 0;
+          svbool_t pg = svwhilelt_b64(l, nw);
+          do {
+            svfloat64_t csrc_vec = svld1(pg, &y[j][l]);
+            svfloat64_t cdst_vec = svld1(pg, &y[k][l]);
+            cdst_vec = svmls_n_f64_z(pg, cdst_vec, csrc_vec, A[k][j]);
+            svst1(pg, &y[k][l], cdst_vec);
+            l += svcntd();
+            pg = svwhilelt_b64(l, nw);
+          } while (svptest_any(svptrue_b64(), pg));
         }
       }
+      // for (k = i; k < i + ib; ++k) {
+      //   for (l = 0; l < nw; ++l) {
+      //     double y_val = y[k][l];
+      //     for (j = i_start; j < i_end; ++j) {
+      //       y_val -= A[k][j] * y[j][l];
+      //     }
+      //     y[k][l] = y_val;
+      //   }
+      // }
       if (myid != 0) {
-        for (l = 0; l < nw; ++l) {
-          for (j = 0; j < ib; ++j) {
-            xbuf[ib * l + j] = x[ne+l][i+j];
-          }
-        }
-        MPI_Send(xbuf, nw * ib, MPI_DOUBLE, myid-1, i+n, COMM);
+        MPI_Send(&y[i][0], nw * ib, MPI_DOUBLE, myid-1, i+n, COMM);
       }
+    }
+  }
+
+  for (l = 0; l < nw; ++l) {
+    for (k = 0; k < n; ++k) {
+      x[ne+l][k] = y[k][l];
     }
   }
 }
