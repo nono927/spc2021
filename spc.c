@@ -142,8 +142,8 @@ void LU(double A[N][N], int n) {
   double buf[n];
 
   for (k=0; k<n; k++) {
-    int src_id = k / ib;
-    if (myid == src_id) {
+    int root_id = k / ib;
+    if (myid == root_id) {
      dtemp = 1.0 / A[k][k];
      for (i=k+1; i<n; i++) {
         A[i][k] = A[i][k]*dtemp;   
@@ -151,12 +151,22 @@ void LU(double A[N][N], int n) {
      for (i=k+1; i<n; i++) {
         buf[i] = A[i][k];
      }
-     for (int dst_id = myid + 1; dst_id < numprocs; ++dst_id) {
-       MPI_Send(buf, n, MPI_DOUBLE, dst_id, k, MPI_COMM_WORLD);
-     }
+    //  for (int dst_id = myid + 1; dst_id < numprocs; ++dst_id) {
+    //    MPI_Send(buf, n, MPI_DOUBLE, dst_id, k, MPI_COMM_WORLD);
+    //  }
+     int dst1 = root_id + 1;
+     int dst2 = root_id + 2;
+     if (dst1 < numprocs) MPI_Send(buf, n, MPI_DOUBLE, dst1, k, MPI_COMM_WORLD);
+     if (dst2 < numprocs) MPI_Send(buf, n, MPI_DOUBLE, dst2, k, MPI_COMM_WORLD);
      ++i_start;
-    } else if (src_id < myid) {
-      MPI_Recv(buf, n, MPI_DOUBLE, src_id, k, MPI_COMM_WORLD, NULL);
+    } else if (root_id < myid) {
+      int d = myid - root_id + 1;
+      int src  = root_id + (d >> 1) - 1;
+      int dst1 = root_id + (d << 1) - 1;
+      int dst2 = root_id + (d << 1);
+      MPI_Recv(buf, n, MPI_DOUBLE, src, k, MPI_COMM_WORLD, NULL);
+      if (dst1 < numprocs) MPI_Send(buf, n, MPI_DOUBLE, dst1, k, MPI_COMM_WORLD);
+      if (dst2 < numprocs) MPI_Send(buf, n, MPI_DOUBLE, dst2, k, MPI_COMM_WORLD);
     } else {
       break;
     }
