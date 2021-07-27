@@ -133,15 +133,22 @@ void main(int argc, char* argv[]) {
 #define USE_PROFILER 1
 
 const int BWIDTH = 8;
+const int R = 24;
+const int IB = (N + NPROCS - 1) / NPROCS;
+const int REDUCE_BUFSIZE = 24;
+double Asend[REDUCE_BUFSIZE][IB * R], Arecv[REDUCE_BUFSIZE][IB * R];
+// double xsend[REDUCE_BUFSIZE][IB * R], xrecv[REDUCE_BUFSIZE][IB * R];
+double C[N][BWIDTH];
+double y[N][BWIDTH];
 
 // LU decomposition
-void LU(double A[N][N], int n) {
+void LU(double A[N][N], int n, double buf[N]) {
   int i, j, k;
   int ib = (n + numprocs - 1) / numprocs;
   int i_start = myid * ib;
   int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
   double dtemp;
-  double buf[n];
+  // double buf[n];
 
   for (k=0; k<n; k++) {
     int root_id = k / ib;
@@ -236,7 +243,7 @@ void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, 
 }
 
 // backward
-void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m, int ne, int nw, double xbuf[], int myid, int numprocs, MPI_Comm COMM) {
+void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m, int ne, int nw, double y[N][BWIDTH], int myid, int numprocs, MPI_Comm COMM) {
   int i, j, k, l;
   double dtemp;
 
@@ -246,7 +253,7 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
 
   // double xbuf[nw * ib];
 
-  double y[n][nw];
+  // double y[N][BWIDTH];
   for (i = 0; i < n; ++i) {
     for (j = 0; j < nw; ++j) {
       y[i][j] = 0.0;
@@ -255,7 +262,7 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
 
   for (i = i_start; i >= 0; i -= ib) {
     if (myid != numprocs - 1) {
-      MPI_Recv(&y[i][0], nw * ib, MPI_DOUBLE, myid+1, i+n, COMM, NULL);
+      MPI_Recv(&y[i][0], ib * BWIDTH, MPI_DOUBLE, myid+1, i+n, COMM, NULL);
     }
     if (i == i_start) {
       for (k = i + ib - 1; k >= i; --k) {
@@ -293,7 +300,7 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
       //   }
       // }
       if (myid != 0) {
-        MPI_Send(&y[i][0], nw * ib, MPI_DOUBLE, myid-1, i+n, COMM);
+        MPI_Send(&y[i][0], ib * BWIDTH, MPI_DOUBLE, myid-1, i+n, COMM);
       }
     }
   }
@@ -313,7 +320,7 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      fapp_start("spc", 1, 0);
 #endif
 
-     const int R = 24;
+    //  const int R = 24;
      MPI_Comm MPI_COMM_SPC;
      MPI_Comm MPI_COMM_REV;
      int color = myid % R;
@@ -331,39 +338,40 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      /* LU decomposition ---------------------- */  
 #if USE_PROFILER
      fapp_start("LU", 1, 0);
-     LU(A, n);
+     LU(A, n, c);
      fapp_stop("LU", 1, 0);
 #else
-     LU(A, n);
+     LU(A, n, c);
 #endif
      /* --------------------------------------- */
 
-     {
+     for (k = 0; k < n; k += REDUCE_BUFSIZE) {
        int c0 = ib * R;
        int c1 = ib * color;
        int c2 = ib * key * R;
-       double Asend[n][c0];
-       double Arecv[n][c0];
-       for (i = 0; i < n; ++i) {
+      //  double Asend[n][c0];
+      //  double Arecv[n][c0];
+       for (i = 0; i < REDUCE_BUFSIZE; ++i) {
          for (j = 0; j < c0; ++j) {
            Asend[i][j] = 0.0;
          }
        }
-       for (i = 0; i < n; ++i) {
+       for (i = 0; i < REDUCE_BUFSIZE; ++i) {
          for (j = 0; j < ib; ++j) {
-           Asend[i][c1 + j] = A[i][i_start + j];
+           Asend[i][c1 + j] = A[k+i][i_start + j];
          }
        }
-       MPI_Allreduce(Asend, Arecv, n*ib*R, MPI_DOUBLE, MPI_SUM, MPI_COMM_REV);
-       for (i = 0; i < n; ++i) {
+       MPI_Allreduce(Asend, Arecv, REDUCE_BUFSIZE*ib*R, MPI_DOUBLE, MPI_SUM, MPI_COMM_REV);
+       for (i = 0; i < REDUCE_BUFSIZE; ++i) {
          for (j = 0; j < ib * R; ++j) {
-           A[i][c2 + j] = Arecv[i][j];
+           A[k+i][c2 + j] = Arecv[i][j];
          }
        }
      }
 
-     double C[n][BWIDTH];
-     double xbuf[BWIDTH*ib*R];
+    //  double C[n][BWIDTH];
+    //  double xbuf[BWIDTH*ib*R];
+    //  double y[N][BWIDTH];
      int MAX_NE = (m / BWIDTH) * BWIDTH;
      int ne_start = (m / R) * color;
      int ne_end = (m / R) * (color + 1);
@@ -384,42 +392,50 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
        /* Backward substitution ------------------ */  
 #if USE_PROFILER
        fapp_start("backward", 1, 0);
-       backward(A, C, x, n, m, ne, BWIDTH, xbuf, key, numprocs_spc, MPI_COMM_SPC);
+       backward(A, C, x, n, m, ne, BWIDTH, y, key, numprocs_spc, MPI_COMM_SPC);
        fapp_stop("backward", 1, 0);
 #else
-       backward(A, C, x, n, m, ne, BWIDTH, xbuf, key, numprocs_spc, MPI_COMM_SPC);
+       backward(A, C, x, n, m, ne, BWIDTH, y, key, numprocs_spc, MPI_COMM_SPC);
 #endif
        /* --------------------------------------- */
 
      }
      for (ne = m / R * R; ne < m; ++ne) {
        forward(A, b, C, n, m, ne, 1, myid, numprocs, MPI_COMM_WORLD);
-       backward(A, C, x, n, m, ne, 1, xbuf, myid, numprocs, MPI_COMM_WORLD);
+       backward(A, C, x, n, m, ne, 1, y, myid, numprocs, MPI_COMM_WORLD);
      }
      /* End of m loop ----------------------------------------- */ 
 
-     {
-       int h = m / R;
-       int c0 = ib * R;
-       int c1 = ib * color;
-       int c2 = ib * key * R;
-       int c3 = h * color;
-       double xsend[m][ib * R];
-       double xrecv[m][ib * R];
-       for (i = 0; i < m; ++i) {
-         for (j = 0; j < c0; ++j) {
-           xsend[i][j] = 0.0;
-         }
-       }
-       for (i = 0; i < h; ++i) {
-         for (j = 0; j < c0; ++j) {
-           xsend[c3 + i][j] = x[c3 + i][c2 + j];
-         }
-       }
-       MPI_Allreduce(xsend, xrecv, m*ib*R, MPI_DOUBLE, MPI_SUM, MPI_COMM_REV);
-       for (i = 0; i < m; ++i) {
-         for (j = 0; j < ib; ++j) {
-           x[i][i_start + j] = xrecv[i][c1 + j];
+     if (m / R > 0) {
+       for (k = 0; k < R; ++k) {
+         int h = m / R;
+         int c0 = ib * R;
+         int c1 = ib * color;
+         int c2 = ib * key * R;
+         int c3 = h * color;
+        //  double xsend[m][ib * R];
+        //  double xrecv[m][ib * R];
+         for (int l = 0; l < h; l += REDUCE_BUFSIZE) {
+           if (color == k) {
+             for (i = 0; i < REDUCE_BUFSIZE; ++i) {
+               for (j = 0; j < c0; ++j) {
+                 Asend[i][j] = x[c3 + l + i][c2 + j];
+               }
+             }
+           } else {
+             for (i = 0; i < REDUCE_BUFSIZE; ++i) {
+               for (j = 0; j < c0; ++j) {
+                //  xsend[c3 + i][j] = x[c3 + i][c2 + j];
+                 Asend[i][j] = 0.0;
+               }
+             }
+           }
+           MPI_Allreduce(Asend, Arecv, REDUCE_BUFSIZE*ib*R, MPI_DOUBLE, MPI_SUM, MPI_COMM_REV);
+           for (i = 0; i < REDUCE_BUFSIZE; ++i) {
+             for (j = 0; j < ib; ++j) {
+               x[h * k + l + i][i_start + j] = Arecv[i][c1 + j];
+             }
+           }
          }
        }
      }
