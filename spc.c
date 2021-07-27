@@ -6,7 +6,7 @@
 
 #include "spc.h"
 
-#define  NPROCS   576
+#define  NPROCS   288
 
 #define  EPS    2.220446e-16
 
@@ -126,6 +126,7 @@ void main(int argc, char* argv[]) {
 }
 
 
+#include <omp.h>
 #include <arm_sve.h>
 #include <fj_tool/fipp.h>
 #include <fj_tool/fapp.h>
@@ -219,20 +220,27 @@ void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, 
       }
     } else {
       for (k = i; k < i + ib; ++k) {
-        for (j = i_start; j < i_end; ++j) {
-          // for (l = 0; l < nw; ++l) {
-          //   c[k][l] -= A[k][j] * c[j][l];
-          // }
-          l = 0;
-          svbool_t pg = svwhilelt_b64(l, nw);
-          do {
-            svfloat64_t csrc_vec = svld1(pg, &c[j][l]);
-            svfloat64_t cdst_vec = svld1(pg, &c[k][l]);
-            cdst_vec = svmls_n_f64_z(pg, cdst_vec, csrc_vec, A[k][j]);
-            svst1(pg, &c[k][l], cdst_vec);
-            l += svcntd();
-            pg = svwhilelt_b64(l, nw);
-          } while (svptest_any(svptrue_b64(), pg));
+        // for (j = i_start; j < i_end; ++j) {
+        //   for (l = 0; l < nw; ++l) {
+        //     c[k][l] -= A[k][j] * c[j][l];
+        //   }
+        //   // l = 0;
+        //   // svbool_t pg = svwhilelt_b64(l, nw);
+        //   // do {
+        //   //   svfloat64_t csrc_vec = svld1(pg, &c[j][l]);
+        //   //   svfloat64_t cdst_vec = svld1(pg, &c[k][l]);
+        //   //   cdst_vec = svmls_n_f64_z(pg, cdst_vec, csrc_vec, A[k][j]);
+        //   //   svst1(pg, &c[k][l], cdst_vec);
+        //   //   l += svcntd();
+        //   //   pg = svwhilelt_b64(l, nw);
+        //   // } while (svptest_any(svptrue_b64(), pg));
+        // }
+        for (l = 0; l < nw; ++l) {
+          double c_val = c[k][l];
+          for (j = i_start; j < i_end; ++j) {
+            c_val -= A[k][j] * c[j][l];
+          }
+          c[k][l] = c_val;
         }
       }
       if (myid != numprocs - 1) {
@@ -276,29 +284,29 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
         }
       }
     } else {
-      for (k = i; k < i + ib; ++k) {
-        for (j = i_start; j < i_end; ++j) {
-          l = 0;
-          svbool_t pg = svwhilelt_b64(l, nw);
-          do {
-            svfloat64_t csrc_vec = svld1(pg, &y[j][l]);
-            svfloat64_t cdst_vec = svld1(pg, &y[k][l]);
-            cdst_vec = svmls_n_f64_z(pg, cdst_vec, csrc_vec, A[k][j]);
-            svst1(pg, &y[k][l], cdst_vec);
-            l += svcntd();
-            pg = svwhilelt_b64(l, nw);
-          } while (svptest_any(svptrue_b64(), pg));
-        }
-      }
       // for (k = i; k < i + ib; ++k) {
-      //   for (l = 0; l < nw; ++l) {
-      //     double y_val = y[k][l];
-      //     for (j = i_start; j < i_end; ++j) {
-      //       y_val -= A[k][j] * y[j][l];
-      //     }
-      //     y[k][l] = y_val;
+      //   for (j = i_start; j < i_end; ++j) {
+      //     l = 0;
+      //     svbool_t pg = svwhilelt_b64(l, nw);
+      //     do {
+      //       svfloat64_t csrc_vec = svld1(pg, &y[j][l]);
+      //       svfloat64_t cdst_vec = svld1(pg, &y[k][l]);
+      //       cdst_vec = svmls_n_f64_z(pg, cdst_vec, csrc_vec, A[k][j]);
+      //       svst1(pg, &y[k][l], cdst_vec);
+      //       l += svcntd();
+      //       pg = svwhilelt_b64(l, nw);
+      //     } while (svptest_any(svptrue_b64(), pg));
       //   }
       // }
+      for (k = i; k < i + ib; ++k) {
+        for (l = 0; l < nw; ++l) {
+          double y_val = y[k][l];
+          for (j = i_start; j < i_end; ++j) {
+            y_val -= A[k][j] * y[j][l];
+          }
+          y[k][l] = y_val;
+        }
+      }
       if (myid != 0) {
         MPI_Send(&y[i][0], ib * BWIDTH, MPI_DOUBLE, myid-1, i+n, COMM);
       }
@@ -363,7 +371,7 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
        }
        MPI_Allreduce(Asend, Arecv, REDUCE_BUFSIZE*ib*R, MPI_DOUBLE, MPI_SUM, MPI_COMM_REV);
        for (i = 0; i < REDUCE_BUFSIZE; ++i) {
-         for (j = 0; j < ib * R; ++j) {
+         for (j = 0; j < c0; ++j) {
            A[k+i][c2 + j] = Arecv[i][j];
          }
        }
