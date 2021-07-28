@@ -138,7 +138,6 @@ const int R = 24;
 const int IB = (N + NPROCS - 1) / NPROCS;
 const int REDUCE_BUFSIZE = 24;
 double Asend[REDUCE_BUFSIZE][IB * R], Arecv[REDUCE_BUFSIZE][IB * R];
-// double xsend[REDUCE_BUFSIZE][IB * R], xrecv[REDUCE_BUFSIZE][IB * R];
 double C[N][BWIDTH];
 double y[N][BWIDTH];
 
@@ -149,7 +148,6 @@ void LU(double A[N][IB], int n, double buf[N]) {
   int i_start = myid * ib;
   int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
   double dtemp;
-  // double buf[n];
 
   const int is = myid * ib;
   for (k=0; k<n; k++) {
@@ -162,9 +160,6 @@ void LU(double A[N][IB], int n, double buf[N]) {
      for (i=k+1; i<n; i++) {
         buf[i] = A[i][k-is];
      }
-    //  for (int dst_id = myid + 1; dst_id < numprocs; ++dst_id) {
-    //    MPI_Send(buf, n, MPI_DOUBLE, dst_id, k, MPI_COMM_WORLD);
-    //  }
      int dst1 = root_id + 1;
      int dst2 = root_id + 2;
      if (dst1 < numprocs) MPI_Send(&buf[k+1], n-k-1, MPI_DOUBLE, dst1, k, MPI_COMM_WORLD);
@@ -182,8 +177,7 @@ void LU(double A[N][IB], int n, double buf[N]) {
       break;
     }
     for (j=k+1; j<n; j++) {
-     //  dtemp = A[j][k];
-      dtemp = buf[j];
+      dtemp = buf[j]; // A[j][k-is];
       for (i=i_start; i<i_end; i++) {
         A[j][i-is] = A[j][i-is] - A[k][i-is]*dtemp; 
       }
@@ -194,7 +188,6 @@ void LU(double A[N][IB], int n, double buf[N]) {
 // forward
 void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, int ne, int nw, int myid, int numprocs, MPI_Comm COMM) {
   int i, j, k, l;
-  double dtemp;
 
   int ib = (n + numprocs - 1) / numprocs;
   int i_start = myid * ib;
@@ -210,10 +203,8 @@ void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, 
     if (myid == i / ib) {
       for (k = i; k < i + ib; ++k) {
         for (l = 0; l < nw; ++l) {
-          // c[k][l] = b[ne][k] + c[k][l];
           double c_val = b[ne][k] + c[k][l];
           for (j = i_start; j < k; ++j) {
-            // c[k][l] -= A[k][j] * c[j][l];
             c_val -= A[k][j] * c[j][l];
           }
           c[k][l] = c_val;
@@ -221,21 +212,6 @@ void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, 
       }
     } else {
       for (k = i; k < i + ib; ++k) {
-        // for (j = i_start; j < i_end; ++j) {
-        //   for (l = 0; l < nw; ++l) {
-        //     c[k][l] -= A[k][j] * c[j][l];
-        //   }
-        //   // l = 0;
-        //   // svbool_t pg = svwhilelt_b64(l, nw);
-        //   // do {
-        //   //   svfloat64_t csrc_vec = svld1(pg, &c[j][l]);
-        //   //   svfloat64_t cdst_vec = svld1(pg, &c[k][l]);
-        //   //   cdst_vec = svmls_n_f64_z(pg, cdst_vec, csrc_vec, A[k][j]);
-        //   //   svst1(pg, &c[k][l], cdst_vec);
-        //   //   l += svcntd();
-        //   //   pg = svwhilelt_b64(l, nw);
-        //   // } while (svptest_any(svptrue_b64(), pg));
-        // }
         for (l = 0; l < nw; ++l) {
           double c_val = c[k][l];
           for (j = i_start; j < i_end; ++j) {
@@ -254,15 +230,11 @@ void forward(double A[N][N], double b[M][N], double c[N][BWIDTH], int n, int m, 
 // backward
 void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m, int ne, int nw, double y[N][BWIDTH], int myid, int numprocs, MPI_Comm COMM) {
   int i, j, k, l;
-  double dtemp;
 
   int ib = (n + numprocs - 1) / numprocs;
   int i_start = myid * ib;
   int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
 
-  // double xbuf[nw * ib];
-
-  // double y[N][BWIDTH];
   for (i = 0; i < n; ++i) {
     for (j = 0; j < nw; ++j) {
       y[i][j] = 0.0;
@@ -285,20 +257,6 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
         }
       }
     } else {
-      // for (k = i; k < i + ib; ++k) {
-      //   for (j = i_start; j < i_end; ++j) {
-      //     l = 0;
-      //     svbool_t pg = svwhilelt_b64(l, nw);
-      //     do {
-      //       svfloat64_t csrc_vec = svld1(pg, &y[j][l]);
-      //       svfloat64_t cdst_vec = svld1(pg, &y[k][l]);
-      //       cdst_vec = svmls_n_f64_z(pg, cdst_vec, csrc_vec, A[k][j]);
-      //       svst1(pg, &y[k][l], cdst_vec);
-      //       l += svcntd();
-      //       pg = svwhilelt_b64(l, nw);
-      //     } while (svptest_any(svptrue_b64(), pg));
-      //   }
-      // }
       for (k = i; k < i + ib; ++k) {
         for (l = 0; l < nw; ++l) {
           double y_val = y[k][l];
@@ -329,7 +287,6 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      fapp_start("spc", 1, 0);
 #endif
 
-    //  const int R = 24;
      MPI_Comm MPI_COMM_SPC;
      MPI_Comm MPI_COMM_REV;
      int color = myid % R;
@@ -338,7 +295,6 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      MPI_Comm_split(MPI_COMM_WORLD, key, color, &MPI_COMM_REV);
 
      int i, j, k, ne;
-     double dtemp;
 
      int ib = (n + numprocs - 1) / numprocs;
      int i_start = myid * ib;
@@ -371,8 +327,7 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
        int c0 = ib * R;
        int c1 = ib * color;
        int c2 = ib * key * R;
-      //  double Asend[n][c0];
-      //  double Arecv[n][c0];
+       
        for (i = 0; i < REDUCE_BUFSIZE; ++i) {
          for (j = 0; j < c0; ++j) {
            Asend[i][j] = 0.0;
@@ -391,10 +346,6 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
        }
      }
 
-    //  double C[n][BWIDTH];
-    //  double xbuf[BWIDTH*ib*R];
-    //  double y[N][BWIDTH];
-     int MAX_NE = (m / BWIDTH) * BWIDTH;
      int ne_start = (m / R) * color;
      int ne_end = (m / R) * (color + 1);
      int numprocs_spc = numprocs / R;
@@ -435,8 +386,7 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
          int c1 = ib * color;
          int c2 = ib * key * R;
          int c3 = h * color;
-        //  double xsend[m][ib * R];
-        //  double xrecv[m][ib * R];
+         
          for (int l = 0; l < h; l += REDUCE_BUFSIZE) {
            if (color == k) {
              for (i = 0; i < REDUCE_BUFSIZE; ++i) {
@@ -447,7 +397,6 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
            } else {
              for (i = 0; i < REDUCE_BUFSIZE; ++i) {
                for (j = 0; j < c0; ++j) {
-                //  xsend[c3 + i][j] = x[c3 + i][c2 + j];
                  Asend[i][j] = 0.0;
                }
              }
