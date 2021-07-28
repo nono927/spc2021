@@ -143,7 +143,7 @@ double C[N][BWIDTH];
 double y[N][BWIDTH];
 
 // LU decomposition
-void LU(double A[N][N], int n, double buf[N]) {
+void LU(double A[N][IB], int n, double buf[N]) {
   int i, j, k;
   int ib = (n + numprocs - 1) / numprocs;
   int i_start = myid * ib;
@@ -151,15 +151,16 @@ void LU(double A[N][N], int n, double buf[N]) {
   double dtemp;
   // double buf[n];
 
+  const int is = myid * ib;
   for (k=0; k<n; k++) {
     int root_id = k / ib;
     if (myid == root_id) {
-     dtemp = 1.0 / A[k][k];
+     dtemp = 1.0 / A[k][k-is];
      for (i=k+1; i<n; i++) {
-        A[i][k] = A[i][k]*dtemp;   
+        A[i][k-is] = A[i][k-is]*dtemp;   
      }
      for (i=k+1; i<n; i++) {
-        buf[i] = A[i][k];
+        buf[i] = A[i][k-is];
      }
     //  for (int dst_id = myid + 1; dst_id < numprocs; ++dst_id) {
     //    MPI_Send(buf, n, MPI_DOUBLE, dst_id, k, MPI_COMM_WORLD);
@@ -184,7 +185,7 @@ void LU(double A[N][N], int n, double buf[N]) {
      //  dtemp = A[j][k];
       dtemp = buf[j];
       for (i=i_start; i<i_end; i++) {
-        A[j][i] = A[j][i] - A[k][i]*dtemp; 
+        A[j][i-is] = A[j][i-is] - A[k][i-is]*dtemp; 
       }
     }
   }
@@ -343,15 +344,28 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      int i_start = myid * ib;
      int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
 
+     double A_local[N][IB];
+     for (i = 0; i < n; ++i) {
+       for (j = 0; j < ib; ++j) {
+         A_local[i][j] = A[i][j+i_start];
+       }
+     }
+
      /* LU decomposition ---------------------- */  
 #if USE_PROFILER
      fapp_start("LU", 1, 0);
-     LU(A, n, c);
+     LU(A_local, n, c);
      fapp_stop("LU", 1, 0);
 #else
-     LU(A, n, c);
+     LU(A_local, n, c);
 #endif
      /* --------------------------------------- */
+
+     for (i = 0; i < n; ++i) {
+       for (j = 0; j < ib; ++j) {
+         A[i][j+i_start] = A_local[i][j];
+       }
+     }
 
      for (k = 0; k < n; k += REDUCE_BUFSIZE) {
        int c0 = ib * R;
