@@ -126,17 +126,28 @@ void main(int argc, char* argv[]) {
 }
 
 
+// ================================================================
+// ここからSPC
+// ================================================================
+
+// 主な工夫
+// 1. LU分解中の通信を二分木方式で伝搬させるようにした
+// 2. 1ループでbのベクトルを複数本一気に処理するようにした
+// 3. xをM方向に分散させた
+
 #include <omp.h>
 #include <arm_sve.h>
 #include <fj_tool/fipp.h>
 #include <fj_tool/fapp.h>
 
-#define USE_PROFILER 1
+#define USE_PROFILER 0
 
+// constants
 const int BWIDTH = 8;
 const int R = 24;
 const int IB = (N + NPROCS - 1) / NPROCS;
 const int REDUCE_BUFSIZE = 24;
+
 double Asend[REDUCE_BUFSIZE][IB * R], Arecv[REDUCE_BUFSIZE][IB * R];
 double C[N][BWIDTH];
 double y[N][BWIDTH];
@@ -151,6 +162,8 @@ void LU(double A[N][IB], int n, double buf[N]) {
 
   const int is = myid * ib;
   for (k=0; k<n; k++) {
+    // 通信
+    // 二分木方式でデータを伝搬させる
     int root_id = k / ib;
     if (myid == root_id) {
      dtemp = 1.0 / A[k][k-is];
@@ -176,6 +189,8 @@ void LU(double A[N][IB], int n, double buf[N]) {
     } else {
       break;
     }
+
+    // 計算
     for (j=k+1; j<n; j++) {
       dtemp = buf[j]; // A[j][k-is];
       for (i=i_start; i<i_end; i++) {
@@ -234,6 +249,9 @@ void backward(double A[N][N], double c[N][BWIDTH], double x[M][N], int n, int m,
   int ib = (n + numprocs - 1) / numprocs;
   int i_start = myid * ib;
   int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
+
+  // yで値を計算してからxに格納
+  // x[ne+l][k] = y[k][l];
 
   for (i = 0; i < n; ++i) {
     for (j = 0; j < nw; ++j) {
@@ -300,14 +318,14 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      int i_start = myid * ib;
      int i_end = (myid + 1) * ib > n ? n : (myid + 1) * ib;
 
-     double A_local[N][IB];
+     /* LU decomposition ---------------------- */  
+     double A_local[N][IB]; // Aの必要な分
      for (i = 0; i < n; ++i) {
        for (j = 0; j < ib; ++j) {
          A_local[i][j] = A[i][j+i_start];
        }
      }
 
-     /* LU decomposition ---------------------- */  
 #if USE_PROFILER
      fapp_start("LU", 1, 0);
      LU(A_local, n, c);
@@ -315,14 +333,16 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
 #else
      LU(A_local, n, c);
 #endif
-     /* --------------------------------------- */
 
-     for (i = 0; i < n; ++i) {
+     for (i = 0; i < n; ++i) {  // Aに戻す
        for (j = 0; j < ib; ++j) {
          A[i][j+i_start] = A_local[i][j];
        }
      }
+     /* --------------------------------------- */
 
+     // AのブロックR個分を共有
+     // 各プロセスがbのM/R本のベクトルを担当する 
      for (k = 0; k < n; k += REDUCE_BUFSIZE) {
        int c0 = ib * R;
        int c1 = ib * color;
@@ -350,11 +370,11 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      int ne_end = (m / R) * (color + 1);
      int numprocs_spc = numprocs / R;
 
-     for (ne=ne_start; ne<ne_end; ne+=BWIDTH) {
+     for (ne=ne_start; ne<ne_end; ne+=BWIDTH) { // bのベクトルをBWIDTH本ずつ一気に計算
   
        /* Forward substitution ------------------ */
 #if USE_PROFILER
-       fapp_start("forward", 1, 0);  
+       fapp_start("forward", 1, 0);    
        forward(A, b, C, n, m, ne, BWIDTH, key, numprocs_spc, MPI_COMM_SPC);
        fapp_stop("forward", 1, 0);
 #else
@@ -379,6 +399,7 @@ void spc(double A[N][N], double b[M][N], double x[M][N], int n, int m)
      }
      /* End of m loop ----------------------------------------- */ 
 
+     // xを各プロセスに分配
      if (m / R > 0) {
        for (k = 0; k < R; ++k) {
          int h = m / R;
